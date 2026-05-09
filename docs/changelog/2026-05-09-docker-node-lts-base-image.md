@@ -14,3 +14,5 @@
   - `pnpm --filter @bunny-agent/runner-cli build` ⚠️ fails because local workspace runner packages are not built in isolation
   - `pnpm --filter @bunny-agent/runner-cli test` ⚠️ fails due pre-existing unrelated runner-cli test failures in this checkout
   - `pnpm --filter @bunny-agent/runner-cli typecheck` ⚠️ fails because local workspace runner packages are not built in isolation
+- Post-change targeted validation:
+  - `pnpm --filter @bunny-agent/runner-cli exec vitest run src/__tests__/build-image.test.ts` ✅
