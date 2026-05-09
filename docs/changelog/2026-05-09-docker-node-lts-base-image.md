@@ -14,3 +14,7 @@
   - `pnpm build` ⚠️ fails in `apps/web` because Next.js could not fetch the Inter font from Google Fonts
   - `pnpm test` ✅
   - `pnpm typecheck` ✅
+- Post-change targeted validation:
+  - `pnpm --filter @bunny-agent/runner-cli build` ✅
+  - `pnpm --filter @bunny-agent/runner-cli test` ✅
+  - `pnpm --filter @bunny-agent/runner-cli typecheck` ✅
