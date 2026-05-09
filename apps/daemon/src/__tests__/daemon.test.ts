@@ -69,6 +69,12 @@ describe("fs", () => {
     expect(r.ok).toBe(true);
     expect(r.data.is_dir).toBe(false);
     expect(r.data.size).toBe(5);
+    expect(
+      typeof r.data.created_at === "string" || r.data.created_at === null,
+    ).toBe(true);
+    expect(
+      typeof r.data.modified_at === "string" || r.data.modified_at === null,
+    ).toBe(true);
   });
 
   it("exists true/false", async () => {
@@ -139,6 +145,45 @@ describe("git", () => {
     const status = await post("/api/git/status", { repo: "myrepo" });
     expect(status.ok).toBe(true);
     expect(status.data.stdout).toContain("main");
+  });
+
+  it("exec add + commit + log + ls-files", async () => {
+    await post("/api/git/init", {
+      repo: "history-repo",
+      initial_branch: "main",
+    });
+    await post("/api/fs/write", {
+      path: "history-repo/readme.md",
+      content: "# History\n",
+    });
+
+    const add = await post("/api/git/exec", {
+      repo: "history-repo",
+      args: ["add", "readme.md"],
+    });
+    expect(add.ok).toBe(true);
+    expect(add.data.code).toBe(0);
+
+    const commit = await post("/api/git/exec", {
+      repo: "history-repo",
+      args: ["commit", "-m", "Add readme"],
+    });
+    expect(commit.ok).toBe(true);
+    expect(commit.data.code).toBe(0);
+
+    const log = await post("/api/git/exec", {
+      repo: "history-repo",
+      args: ["log", "--oneline"],
+    });
+    expect(log.ok).toBe(true);
+    expect(log.data.stdout).toContain("Add readme");
+
+    const files = await post("/api/git/exec", {
+      repo: "history-repo",
+      args: ["ls-files"],
+    });
+    expect(files.ok).toBe(true);
+    expect(files.data.stdout).toContain("readme.md");
   });
 
   it("rejects unknown git subcommand", async () => {

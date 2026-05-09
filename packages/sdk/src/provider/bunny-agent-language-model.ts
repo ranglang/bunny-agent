@@ -1,5 +1,4 @@
 import type {
-  JSONObject,
   JSONValue,
   LanguageModelV3,
   LanguageModelV3CallOptions,
@@ -19,13 +18,16 @@ import {
   type Message,
   type RunnerSpec,
   streamCodingRunFromSandbox,
+  type ToolRef,
 } from "@bunny-agent/manager";
 import { getProviderLogger } from "./logging";
+import { compileToolRefsFromLanguageModelTools } from "./tool-refs";
 import type {
   BunnyAgentModelId,
   BunnyAgentProviderSettings,
   Logger,
 } from "./types";
+import { normalizeBunnyAgentUsage } from "./usage";
 
 /**
  * Options for creating a BunnyAgent language model instance.
@@ -56,15 +58,29 @@ function asyncIterableToReadableStream(
   const iterator = iterable[Symbol.asyncIterator]();
   return new ReadableStream<Uint8Array>({
     async pull(controller) {
-      while (true) {
-        const { done, value } = await iterator.next();
-        if (done) {
-          controller.close();
-          return;
+      try {
+        while (true) {
+          const { done, value } = await iterator.next();
+          if (done) {
+            controller.close();
+            return;
+          }
+          if (value.byteLength > 0) {
+            controller.enqueue(value);
+            return;
+          }
         }
-        if (value.byteLength > 0) {
-          controller.enqueue(value);
-          return;
+      } catch (error) {
+        const isAbort =
+          (error instanceof Error && error.name === "AbortError") ||
+          (typeof DOMException !== "undefined" &&
+            error instanceof DOMException &&
+            error.name === "AbortError") ||
+          (error instanceof Error && /abort/i.test(error.message));
+        if (isAbort) {
+          controller.close();
+        } else {
+          controller.error(error);
         }
       }
     },
@@ -72,6 +88,14 @@ function asyncIterableToReadableStream(
       await iterator.return?.(reason);
     },
   });
+}
+
+function mergeToolRefs(
+  staticToolRefs: ToolRef[] | undefined,
+  callToolRefs: ToolRef[] | undefined,
+): ToolRef[] | undefined {
+  const merged = [...(staticToolRefs ?? []), ...(callToolRefs ?? [])];
+  return merged.length > 0 ? merged : undefined;
 }
 
 function getLastUserTextFromMessages(messages: Message[]): string {
@@ -102,6 +126,13 @@ function createEmptyUsage(): LanguageModelV3Usage {
   };
 }
 
+function readToolDynamicFlag(parsed: Record<string, unknown>): boolean {
+  if (typeof parsed.dynamic === "boolean") {
+    return parsed.dynamic;
+  }
+  return parsed.providerExecuted === true;
+}
+
 /**
  * BunnyAgent Language Model implementation for AI SDK.
  */
@@ -113,19 +144,34 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
     "image/*": [/.*/],
   };
 
+  readonly settings: BunnyAgentProviderSettings & { runner: RunnerSpec };
   private readonly options: BunnyAgentProviderSettings & { runner: RunnerSpec };
   private readonly logger: Logger;
   private sessionId: string | undefined;
   private toolNameMap: Map<string, string> = new Map();
   private legacyTextPartCounter = 0;
 
+  private logUnparsedStreamLine(candidate: string, error: unknown): void {
+    const trimmed = candidate.trim();
+    if (!trimmed) return;
+    const looksLikeError = /\b(error|failed|exception|traceback|fatal)\b/i.test(
+      trimmed,
+    );
+    if (looksLikeError) {
+      const snippet = trimmed.slice(0, 500);
+      const msg = error instanceof Error ? error.message : String(error);
+      this.logger.error(
+        `[bunny-agent] Unparsed stream line (likely runner error): ${snippet} | parser: ${msg}`,
+      );
+    }
+  }
+
   constructor(modelOptions: BunnyAgentLanguageModelOptions) {
     this.modelId = modelOptions.id;
+    this.settings = modelOptions.options;
     this.options = modelOptions.options;
     this.logger = getProviderLogger(modelOptions.options);
-    this.provider = modelOptions.options.daemonUrl
-      ? "bunny-agent-daemon"
-      : "bunny-agent";
+    this.provider = "bunny-agent";
   }
 
   async doGenerate(
@@ -260,6 +306,9 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
       );
     }
 
+    const callToolRefs = compileToolRefsFromLanguageModelTools(options.tools);
+    const toolRefs = mergeToolRefs(this.options.toolRefs, callToolRefs);
+
     const daemonUrl = this.options.daemonUrl;
 
     if (daemonUrl) {
@@ -267,7 +316,7 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
       const sandboxEnv = sandbox.getEnv?.() ?? {};
       const runnerEnv = { ...sandboxEnv, ...this.options.env };
       const body: BunnyAgentCodingRunBody = {
-        ...this.buildCodingRunBody(messages, handle.getWorkdir()),
+        ...this.buildCodingRunBody(messages, handle.getWorkdir(), toolRefs),
         ...(Object.keys(runnerEnv).length > 0 ? { env: runnerEnv } : {}),
       };
       const execOpts = {
@@ -302,6 +351,7 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
         },
         resume: this.options.resume,
         signal: abortSignal,
+        ...(toolRefs && toolRefs.length > 0 ? { toolRefs } : {}),
       });
       return this.buildStreamResult(bytesStream, messages);
     } catch (error) {
@@ -319,9 +369,11 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
   private buildCodingRunBody(
     messages: Message[],
     cwdFallback: string,
+    toolRefs: ToolRef[] | undefined,
   ): BunnyAgentCodingRunBody {
     const runner = this.options.runner;
     const cwd = this.options.cwd ?? cwdFallback;
+
     return {
       runner: runner.runnerType ?? "claude",
       model: this.modelId,
@@ -333,6 +385,7 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
       allowedTools: runner.allowedTools ?? this.options.allowedTools,
       skillPaths: runner.skillPaths ?? this.options.skillPaths,
       yolo: this.options.yolo,
+      ...(toolRefs && toolRefs.length > 0 ? { toolRefs } : {}),
     };
   }
 
@@ -413,13 +466,8 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
                   }
                 }
               } catch (e) {
-                // daemon /api/coding/run may emit plain text lines; ignore non-JSON fragments.
-                const msg = e instanceof Error ? e.message : String(e);
-                if (!msg.includes("Unexpected token")) {
-                  self.logger.error(
-                    `[bunny-agent] Failed to parse stream data: ${e}`,
-                  );
-                }
+                // daemon /api/coding/run or CLI runner may emit plain text lines.
+                self.logUnparsedStreamLine(candidate, e);
               }
             }
 
@@ -429,14 +477,21 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
             }
           }
         } catch (error) {
-          if (error instanceof Error && error.name === "AbortError") {
+          const isAbort =
+            (error instanceof Error && error.name === "AbortError") ||
+            (typeof DOMException !== "undefined" &&
+              error instanceof DOMException &&
+              error.name === "AbortError") ||
+            (error instanceof Error && /abort/i.test(error.message));
+          if (isAbort) {
             self.logger.info("[bunny-agent] Stream aborted by user");
+            controller.close();
           } else {
             self.logger.error(
               `[bunny-agent] Stream error: ${formatErrorForLog(error)}`,
             );
+            controller.error(error);
           }
-          controller.error(error);
         }
       },
 
@@ -456,8 +511,8 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
       try {
         const parsedParts = this.parseSSEData(candidate);
         parts.push(...parsedParts);
-      } catch {
-        // ignore trailing non-JSON lines on stream close
+      } catch (e) {
+        this.logUnparsedStreamLine(candidate, e);
       }
     }
 
@@ -557,7 +612,7 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
           type: "tool-input-start",
           id: parsed.toolCallId as string,
           toolName: parsed.toolName as string,
-          dynamic: parsed.dynamic as boolean,
+          dynamic: readToolDynamicFlag(parsed),
           providerExecuted: parsed.providerExecuted as boolean,
         });
         break;
@@ -581,7 +636,7 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
           toolCallId,
           toolName,
           input: JSON.stringify(input),
-          dynamic: parsed.dynamic as boolean,
+          dynamic: readToolDynamicFlag(parsed),
           providerExecuted: parsed.providerExecuted as boolean,
         });
         break;
@@ -595,7 +650,7 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
           toolName: toolName ?? "",
           result: parsed.output as NonNullable<JSONValue>,
           isError: parsed.isError as boolean,
-          dynamic: parsed.dynamic as boolean,
+          dynamic: readToolDynamicFlag(parsed),
         });
         break;
       }
@@ -625,11 +680,10 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
           finishReason = this.mapFinishReason(rawFinishReason as string);
         }
 
-        const messageMetadata = parsed.messageMetadata as
-          | { usage?: Record<string, unknown> }
-          | undefined;
-        const rawUsage = messageMetadata?.usage;
-        const usage = this.convertUsage(rawUsage);
+        const usage =
+          normalizeBunnyAgentUsage(
+            (parsed.messageMetadata as Record<string, unknown>) ?? undefined,
+          ) ?? createEmptyUsage();
 
         parts.push({
           type: "finish",
@@ -756,66 +810,5 @@ export class BunnyAgentLanguageModel implements LanguageModelV3 {
       default:
         return { unified: "other", raw: reason ?? "unknown" };
     }
-  }
-
-  private convertUsage(
-    data: Record<string, unknown> | undefined,
-  ): LanguageModelV3Usage {
-    if (!data) {
-      return createEmptyUsage();
-    }
-
-    if ("inputTokens" in data && "outputTokens" in data) {
-      const inputTokens = data.inputTokens as Record<string, number>;
-      const outputTokens = data.outputTokens as Record<string, number>;
-      // Check if there's a raw field in the data
-      const rawData =
-        "raw" in data ? (data.raw as Record<string, unknown>) : data;
-
-      return {
-        inputTokens: {
-          total: inputTokens.total ?? 0,
-          noCache: inputTokens.noCache ?? 0,
-          cacheRead: inputTokens.cacheRead ?? 0,
-          cacheWrite: inputTokens.cacheWrite ?? 0,
-        },
-        outputTokens: {
-          total: outputTokens.total ?? 0,
-          text: outputTokens.text ?? outputTokens.textTokens ?? undefined,
-          reasoning:
-            outputTokens.reasoning ?? outputTokens.reasoningTokens ?? undefined,
-        },
-        raw: rawData as JSONObject,
-      };
-    }
-
-    const usage = (data.usage ?? data) as Record<string, number | undefined>;
-
-    if ("input_tokens" in usage || "output_tokens" in usage) {
-      const inputTokens = (usage.input_tokens as number) ?? 0;
-      const outputTokens = (usage.output_tokens as number) ?? 0;
-      const cacheWrite = (usage.cache_creation_input_tokens as number) ?? 0;
-      const cacheRead = (usage.cache_read_input_tokens as number) ?? 0;
-      // Check for text/reasoning tokens if available
-      const textTokens = (usage.text_tokens as number) ?? undefined;
-      const reasoningTokens = (usage.reasoning_tokens as number) ?? undefined;
-
-      return {
-        inputTokens: {
-          total: inputTokens + cacheWrite + cacheRead,
-          noCache: inputTokens,
-          cacheRead,
-          cacheWrite,
-        },
-        outputTokens: {
-          total: outputTokens,
-          text: textTokens,
-          reasoning: reasoningTokens,
-        },
-        raw: usage as JSONObject,
-      };
-    }
-
-    return createEmptyUsage();
   }
 }

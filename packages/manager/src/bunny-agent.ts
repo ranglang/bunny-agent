@@ -75,7 +75,8 @@ export class BunnyAgent {
       cmd.push("--max-turns", String(this.runner.maxTurns));
     }
 
-    // Add optional allowed tools
+    // Add optional allowed tools. This controls the full runner tool registry,
+    // including built-ins, runner custom tools, and tool refs.
     if (this.runner.allowedTools) {
       cmd.push("--allowed-tools", this.runner.allowedTools.join(","));
     }
@@ -160,10 +161,21 @@ export class BunnyAgent {
       });
     }
 
+    // Plumb tool refs to the in-sandbox runner via env. The
+    // runner-cli reads BUNNY_AGENT_TOOL_REFS_JSON on startup and unsets it
+    // before spawning any child process so tokens/headers do not leak to bash
+    // tools.
+    const toolRefsEnv: Record<string, string> = {};
+    if (input.toolRefs && input.toolRefs.length > 0) {
+      toolRefsEnv.BUNNY_AGENT_TOOL_REFS_JSON = JSON.stringify({
+        tools: input.toolRefs,
+      });
+    }
+
     // Execute the command and get stdout as an async iterable
     const stdout = handle.exec(command, {
       cwd: workspacePath,
-      env: this.env,
+      env: { ...this.env, ...toolRefsEnv },
       signal,
     });
 
@@ -201,11 +213,16 @@ export class BunnyAgent {
           controller.close();
           controllerClosed = true;
         } catch (error) {
-          if (error instanceof Error && error.name === "AbortError") {
-            // Normal abort operation - log appropriately
+          const isAbort =
+            (error instanceof Error && error.name === "AbortError") ||
+            (typeof DOMException !== "undefined" &&
+              error instanceof DOMException &&
+              error.name === "AbortError") ||
+            (error instanceof Error && /abort/i.test(error.message));
+
+          if (isAbort) {
             console.log("[BunnyAgent] Operation aborted by user");
           } else {
-            // Other errors
             const errorMessage =
               error instanceof Error ? error.message : String(error);
             console.error("[BunnyAgent] Error:", errorMessage);
@@ -219,8 +236,10 @@ export class BunnyAgent {
           }
 
           // Only call controller.error if controller hasn't been closed yet
-          if (!controllerClosed) {
+          if (!controllerClosed && !isAbort) {
             controller.error(error);
+          } else if (!controllerClosed) {
+            controller.close();
           }
         }
       },

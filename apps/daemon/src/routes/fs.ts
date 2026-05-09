@@ -71,12 +71,9 @@ export async function fsList(state: AppState, q: ListQuery) {
       const fullPath = path.join(target, e.name);
       const stat = await fs.stat(fullPath).catch(() => null);
       const created_at =
-        stat === null
-          ? null
-          : (msToIsoOrNull(
-              (stat as unknown as { birthtimeMs?: number }).birthtimeMs,
-            ) ??
-            msToIsoOrNull((stat as unknown as { ctimeMs?: number }).ctimeMs));
+        msToIsoOrNull(
+          (stat as unknown as { birthtimeMs?: number })?.birthtimeMs,
+        ) ?? msToIsoOrNull((stat as unknown as { ctimeMs?: number })?.ctimeMs);
       return {
         name: e.name,
         path: fullPath,
@@ -85,7 +82,7 @@ export async function fsList(state: AppState, q: ListQuery) {
         size: stat?.isFile() ? stat.size : 0,
         created_at,
         modified_at: msToIsoOrNull(
-          (stat as unknown as { mtimeMs?: number }).mtimeMs,
+          (stat as unknown as { mtimeMs?: number })?.mtimeMs,
         ),
       };
     }),
@@ -120,10 +117,17 @@ export async function fsStat(state: AppState, q: PathQuery) {
   const root = resolveVolumeRoot(state, q.volume);
   const target = resolveUnderRoot(root, q.path);
   const stat = await fs.stat(target);
+  const created_at =
+    msToIsoOrNull((stat as unknown as { birthtimeMs?: number })?.birthtimeMs) ??
+    msToIsoOrNull((stat as unknown as { ctimeMs?: number })?.ctimeMs);
   return ok({
     path: target,
     is_dir: stat.isDirectory(),
     size: stat.isFile() ? stat.size : 0,
+    created_at,
+    modified_at: msToIsoOrNull(
+      (stat as unknown as { mtimeMs?: number })?.mtimeMs,
+    ),
   });
 }
 

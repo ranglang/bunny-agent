@@ -51,12 +51,17 @@ export type {
   StreamWriter,
   SubmitAnswerOptions,
   SubmitAnswerParams,
+  ToolRuntime,
   TranscriptEntry,
 } from "./provider";
 // Provider exports
 export {
   BunnyAgentLanguageModel,
+  bunnyHttpTool,
+  bunnySandboxTool,
   createBunnyAgent,
+  getBunnyAgentMetadata,
+  getBunnyAgentUsage,
   submitAnswer,
 } from "./provider";
 
