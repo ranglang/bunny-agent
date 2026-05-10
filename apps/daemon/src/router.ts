@@ -5,12 +5,16 @@ import { volumesEnsure, volumesList, volumesRemove } from "./routes/volumes.js";
 import type { ApiEnvelope, AppState } from "./utils.js";
 import { AppError, fail } from "./utils.js";
 
-// biome-ignore lint/suspicious/noExplicitAny: route handlers have specific typed params, cast is intentional
-type RouteHandler = (state: AppState, params: any) => Promise<ApiEnvelope>;
+type RouteHandler = (
+  state: AppState,
+  // biome-ignore lint/suspicious/noExplicitAny: route handlers have specific typed params, cast is intentional
+  params: any,
+) => Promise<ApiEnvelope>;
+type Route = [method: string, pattern: string, handler: RouteHandler];
 
 export class DaemonRouter {
   private state: AppState;
-  private routes: [string, string, RouteHandler][];
+  private routes: Route[];
 
   constructor(opts: { root: string }) {
     this.state = {
@@ -32,6 +36,11 @@ export class DaemonRouter {
       ["POST", "/api/fs/remove", (s, b) => fsRoutes.fsRemove(s, b)],
       ["POST", "/api/fs/move", (s, b) => fsRoutes.fsMove(s, b)],
       ["POST", "/api/fs/copy", (s, b) => fsRoutes.fsCopy(s, b)],
+      [
+        "POST",
+        "/api/fs/write-from-url",
+        (s, b) => fsRoutes.fsWriteFromUrl(s, b),
+      ],
       ["POST", "/api/git/status", (s, b) => gitRoutes.gitStatus(s, b)],
       ["POST", "/api/git/exec", (s, b) => gitRoutes.gitExec(s, b)],
       ["POST", "/api/git/clone", (s, b) => gitRoutes.gitClone(s, b)],
@@ -49,9 +58,13 @@ export class DaemonRouter {
       return { status: 200, body: healthHandler(this.state) };
     }
     for (const [m, p, handler] of this.routes) {
-      if (method === m && pathname === p) {
+      if (method !== m) continue;
+      if (p === pathname) {
         try {
-          return { status: 200, body: await handler(this.state, params) };
+          return {
+            status: 200,
+            body: await handler(this.state, params),
+          };
         } catch (err) {
           if (err instanceof AppError) {
             return { status: err.status, body: fail(err.message) };

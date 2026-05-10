@@ -3,6 +3,7 @@ import type * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { DaemonRouter } from "../router.js";
 import { createDaemon } from "../server.js";
 
 const PORT = 13080;
@@ -122,6 +123,119 @@ describe("fs", () => {
   });
 });
 
+describe("fs write-from-url", () => {
+  const payload = Buffer.from("hello-from-upstream");
+  let upstream: http.Server;
+  let upstreamPort: number;
+  let upstreamRequests = 0;
+  let slowResolvers: Array<() => void> = [];
+
+  beforeAll(async () => {
+    const mod = await import("node:http");
+    upstream = mod.createServer((req, res) => {
+      upstreamRequests++;
+      const url = new URL(req.url ?? "/", "http://localhost");
+      if (url.pathname === "/bytes") {
+        res.writeHead(200, {
+          "Content-Type": "video/mp4",
+          "Content-Length": payload.length,
+        });
+        res.end(payload);
+        return;
+      }
+      if (url.pathname === "/slow") {
+        res.writeHead(200, { "Content-Type": "video/mp4" });
+        res.write(payload.subarray(0, 4));
+        slowResolvers.push(() => {
+          res.write(payload.subarray(4));
+          res.end();
+        });
+        return;
+      }
+      if (url.pathname === "/404") {
+        res.writeHead(404);
+        res.end("nope");
+        return;
+      }
+      res.writeHead(500);
+      res.end();
+    });
+    await new Promise<void>((r) => upstream.listen(0, r));
+    const addr = upstream.address();
+    if (!addr || typeof addr === "string") throw new Error("no upstream port");
+    upstreamPort = addr.port;
+  });
+
+  afterAll(async () => {
+    for (const r of slowResolvers) r();
+    slowResolvers = [];
+    await new Promise<void>((r) => upstream.close(() => r()));
+  });
+
+  it("streams remote body into target file", async () => {
+    upstreamRequests = 0;
+    const r = await post("/api/fs/write-from-url", {
+      path: "downloads/clip.mp4",
+      url: `http://127.0.0.1:${upstreamPort}/bytes`,
+    });
+    expect(r.ok).toBe(true);
+    expect(r.data.size).toBe(payload.length);
+    expect(r.data.contentType).toBe("video/mp4");
+    expect(upstreamRequests).toBe(1);
+
+    const written = await fs.readFile(path.join(root, "downloads", "clip.mp4"));
+    expect(written.equals(payload)).toBe(true);
+  });
+
+  it("cleans up tmp file and returns error on 404", async () => {
+    const r = await post("/api/fs/write-from-url", {
+      path: "downloads/missing.mp4",
+      url: `http://127.0.0.1:${upstreamPort}/404`,
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/download failed: 404/);
+
+    const entries = await fs.readdir(path.join(root, "downloads"));
+    expect(entries.some((name) => name.includes(".part"))).toBe(false);
+    expect(entries.includes("missing.mp4")).toBe(false);
+  });
+
+  it("rejects non-http/https URL", async () => {
+    const r = await post("/api/fs/write-from-url", {
+      path: "downloads/reject.mp4",
+      url: "ftp://example.com/file.mp4",
+    });
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/unsupported url protocol/);
+  });
+
+  it("rejects path traversal in write-from-url", async () => {
+    const r = await post("/api/fs/write-from-url", {
+      path: "../../etc/evil.mp4",
+      url: `http://127.0.0.1:${upstreamPort}/bytes`,
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it("aborts slow download when idle timeout elapses", async () => {
+    const pending = post("/api/fs/write-from-url", {
+      path: "downloads/slow.mp4",
+      url: `http://127.0.0.1:${upstreamPort}/slow`,
+      idle_timeout_ms: 1000,
+      timeout_ms: 5000,
+    });
+    const r = await pending;
+    // After idle timeout fires, upstream is not resolved yet — flush so afterAll can close.
+    for (const resolve of slowResolvers) resolve();
+    slowResolvers = [];
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/aborted|write-from-url failed/);
+
+    const entries = await fs.readdir(path.join(root, "downloads"));
+    expect(entries.some((name) => name.includes(".part"))).toBe(false);
+  });
+});
+
 describe("volumes", () => {
   it("ensure + list + remove", async () => {
     await post("/api/volumes/ensure", { volume: "vol-001" });
@@ -131,6 +245,27 @@ describe("volumes", () => {
     await post("/api/volumes/remove", { volume: "vol-001" });
     const after = await get("/api/volumes/list");
     expect(after.data.volumes).not.toContain("vol-001");
+  });
+});
+
+describe("router", () => {
+  it("dispatches static routes only", async () => {
+    const router = new DaemonRouter({ root });
+
+    const staticRoute = await router.handle("GET", "/api/fs/exists", {
+      path: "router-missing.txt",
+    });
+    expect(staticRoute).toMatchObject({
+      status: 200,
+      body: { ok: true, data: { exists: false } },
+    });
+
+    const dynamicRoute = await router.handle(
+      "POST",
+      "/api/fs/exists/not-a-route",
+      {},
+    );
+    expect(dynamicRoute).toBeNull();
   });
 });
 
