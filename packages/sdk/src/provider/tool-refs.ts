@@ -145,8 +145,8 @@ export function compileToolRefsFromLanguageModelTools(
     if (!runtime) {
       throw new Error(
         `[bunny-agent] Tool "${tool.name}" was passed through AI SDK streamText, ` +
-        "but Bunny cannot access host-side tool({ execute }) callbacks at the provider boundary. " +
-        "Use bunnyHttpTool(...) for an endpoint tool or bunnySandboxTool(...) for a sandbox-local module.",
+          "but Bunny cannot access host-side tool({ execute }) callbacks at the provider boundary. " +
+          "Use bunnyHttpTool(...) for an endpoint tool or bunnySandboxTool(...) for a sandbox-local module.",
       );
     }
 

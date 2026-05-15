@@ -26,18 +26,18 @@ export class PiToolRefError extends Error {
 
 export type PiToolRuntime =
   | {
-    type: "http";
-    url: string;
-    headers?: Record<string, string>;
-  }
+      type: "http";
+      url: string;
+      headers?: Record<string, string>;
+    }
   | {
-    type: "module";
-    module: string;
-    exportName?: string;
-  }
+      type: "module";
+      module: string;
+      exportName?: string;
+    }
   | {
-    type: "client";
-  };
+      type: "client";
+    };
 
 export interface PiToolRef {
   name: string;

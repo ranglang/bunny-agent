@@ -430,10 +430,10 @@ function createCodingRunSandbox(
     getSandboxId: () => null,
     getVolumes: () => null,
     getWorkdir: () => "/workspace",
-    exec: async function* () { },
-    upload: async () => { },
+    exec: async function* () {},
+    upload: async () => {},
     readFile: async () => "",
-    destroy: async () => { },
+    destroy: async () => {},
     streamCodingRun: async function* (
       body: BunnyAgentCodingRunBody,
       _opts?: ExecOptions,
