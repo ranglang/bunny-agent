@@ -11,10 +11,7 @@ import * as path from "node:path";
 import fc from "fast-check";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { DaemonRouter } from "../router.js";
-import {
-  SIMPLE_GIT_RPC_COMMANDS,
-  simpleGitRpc,
-} from "../routes/git.js";
+import { SIMPLE_GIT_RPC_COMMANDS, simpleGitRpc } from "../routes/git.js";
 import { createSimpleGitProxy } from "../shared/git-types.js";
 
 // ---------------------------------------------------------------------------
@@ -147,9 +144,13 @@ describe("simple-git-rpc PBT", () => {
             json: async () => ({ ok: true, data, error: null }),
           }) as unknown as Response;
 
-        const proxy = createSimpleGitProxy(endpoint, mockFetch as typeof fetch, {
-          repo: ".",
-        });
+        const proxy = createSimpleGitProxy(
+          endpoint,
+          mockFetch as typeof fetch,
+          {
+            repo: ".",
+          },
+        );
 
         const result = await proxy.status();
         expect(result).toEqual(data);
@@ -168,43 +169,39 @@ describe("simple-git-rpc PBT", () => {
    *
    * Validates: Requirements 2.2, 3.4
    */
-  it(
-    "Property 1 — allowlisted commands succeed on a valid repo",
-    async () => {
-      await fc.assert(
-        fc.asyncProperty(
-          fc.constantFrom(...SIMPLE_GIT_RPC_COMMANDS),
-          async (command) => {
-            const response = await router.handle(
-              "POST",
-              "/api/git/simple-git-rpc",
-              { repo: ".", command },
-            );
+  it("Property 1 — allowlisted commands succeed on a valid repo", async () => {
+    await fc.assert(
+      fc.asyncProperty(
+        fc.constantFrom(...SIMPLE_GIT_RPC_COMMANDS),
+        async (command) => {
+          const response = await router.handle(
+            "POST",
+            "/api/git/simple-git-rpc",
+            { repo: ".", command },
+          );
 
-            // The router must always return a response (never null) for a known route
-            expect(response).not.toBeNull();
+          // The router must always return a response (never null) for a known route
+          expect(response).not.toBeNull();
 
-            // The response must be either 200 (success) or 400 (expected git error,
-            // e.g. no remote for fetch/pull/push, no commits for log/show, etc.).
-            // It must NEVER be 500 — all simple-git errors must be caught and
-            // surfaced as AppError(400), not as unhandled exceptions.
-            expect([200, 400]).toContain(response!.status);
+          // The response must be either 200 (success) or 400 (expected git error,
+          // e.g. no remote for fetch/pull/push, no commits for log/show, etc.).
+          // It must NEVER be 500 — all simple-git errors must be caught and
+          // surfaced as AppError(400), not as unhandled exceptions.
+          expect([200, 400]).toContain(response!.status);
 
-            if (response!.status === 200) {
-              // On success the envelope must have ok: true
-              expect(response!.body.ok).toBe(true);
-            } else {
-              // On a handled error the envelope must have ok: false with an error message
-              expect(response!.body.ok).toBe(false);
-              expect(typeof response!.body.error).toBe("string");
-            }
-          },
-        ),
-        { numRuns: 100 },
-      );
-    },
-    30_000, // 30 s — each run invokes a real git subprocess; 100 runs need extra time
-  );
+          if (response!.status === 200) {
+            // On success the envelope must have ok: true
+            expect(response!.body.ok).toBe(true);
+          } else {
+            // On a handled error the envelope must have ok: false with an error message
+            expect(response!.body.ok).toBe(false);
+            expect(typeof response!.body.error).toBe("string");
+          }
+        },
+      ),
+      { numRuns: 100 },
+    );
+  }, 30_000); // 30 s — each run invokes a real git subprocess; 100 runs need extra time
 
   /**
    * Property 7: Proxy rejects with Error on ok:false responses
@@ -215,21 +212,18 @@ describe("simple-git-rpc PBT", () => {
     const endpoint = "http://localhost/api/git/simple-git-rpc";
 
     await fc.assert(
-      fc.asyncProperty(
-        fc.string({ minLength: 1 }),
-        async (errorMsg) => {
-          const mockFetch = async (_url: string, _init?: RequestInit) =>
-            ({
-              json: async () => ({ ok: false, data: null, error: errorMsg }),
-            }) as unknown as Response;
+      fc.asyncProperty(fc.string({ minLength: 1 }), async (errorMsg) => {
+        const mockFetch = async (_url: string, _init?: RequestInit) =>
+          ({
+            json: async () => ({ ok: false, data: null, error: errorMsg }),
+          }) as unknown as Response;
 
-          const proxy = createSimpleGitProxy(endpoint, mockFetch, {
-            repo: ".",
-          });
+        const proxy = createSimpleGitProxy(endpoint, mockFetch, {
+          repo: ".",
+        });
 
-          await expect(proxy.status()).rejects.toThrow(errorMsg);
-        },
-      ),
+        await expect(proxy.status()).rejects.toThrow(errorMsg);
+      }),
       { numRuns: 100 },
     );
   });
@@ -359,22 +353,19 @@ describe("simple-git-rpc PBT", () => {
    */
   it("Property 8: existing /api/git/rpc endpoint is unaffected", async () => {
     await fc.assert(
-      fc.asyncProperty(
-        fc.constant("version"),
-        async (command) => {
-          const result = await router.handle("POST", "/api/git/rpc", {
-            repo: tmpRepoPath,
-            command,
-          });
+      fc.asyncProperty(fc.constant("version"), async (command) => {
+        const result = await router.handle("POST", "/api/git/rpc", {
+          repo: tmpRepoPath,
+          command,
+        });
 
-          // The route must be registered and return a non-null response
-          expect(result).not.toBeNull();
-          if (result === null) return;
+        // The route must be registered and return a non-null response
+        expect(result).not.toBeNull();
+        if (result === null) return;
 
-          expect(result.status).toBe(200);
-          expect(result.body.ok).toBe(true);
-        },
-      ),
+        expect(result.status).toBe(200);
+        expect(result.body.ok).toBe(true);
+      }),
       { numRuns: 10 },
     );
   });

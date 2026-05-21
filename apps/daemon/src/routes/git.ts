@@ -768,7 +768,9 @@ export async function simpleGitRpc(
   // Dispatch
   const sg = simpleGit({ baseDir: repoPath });
   try {
-    const result = await (sg as any)[body.command](body.options ?? {});
+    const result = await (
+      sg as unknown as Record<string, (options?: unknown) => Promise<unknown>>
+    )[body.command](body.options ?? {});
     return ok(result);
   } catch (err) {
     throw new AppError(400, errorMessage(err));
