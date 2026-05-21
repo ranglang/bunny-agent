@@ -1,6 +1,7 @@
 import * as fsRoutes from "./routes/fs.js";
 import * as gitRoutes from "./routes/git.js";
 import { healthHandler } from "./routes/health.js";
+import * as processRoutes from "./routes/processes.js";
 import { volumesEnsure, volumesList, volumesRemove } from "./routes/volumes.js";
 import type { ApiEnvelope, AppState } from "./utils.js";
 import { AppError, fail } from "./utils.js";
@@ -30,6 +31,11 @@ export class DaemonRouter {
       ["GET", "/api/fs/stat", (s, q) => fsRoutes.fsStat(s, q)],
       ["GET", "/api/fs/exists", (s, q) => fsRoutes.fsExists(s, q)],
       ["GET", "/api/fs/find", (s, q) => fsRoutes.fsFind(s, q)],
+      [
+        "GET",
+        "/api/sandbox/processes",
+        (s) => processRoutes.sandboxProcesses(s),
+      ],
       ["POST", "/api/fs/write", (s, b) => fsRoutes.fsWrite(s, b)],
       ["POST", "/api/fs/append", (s, b) => fsRoutes.fsAppend(s, b)],
       ["POST", "/api/fs/mkdir", (s, b) => fsRoutes.fsMkdir(s, b)],

@@ -2,8 +2,12 @@ import * as fs from "node:fs/promises";
 import type * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DaemonRouter } from "../router.js";
+import {
+  __resetSandboxProcessInspectorsForTests,
+  __setSandboxProcessInspectorsForTests,
+} from "../routes/processes.js";
 import { createDaemon } from "../server.js";
 
 const PORT = 13080;
@@ -20,6 +24,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
   await fs.rm(root, { recursive: true });
+});
+
+afterEach(() => {
+  __resetSandboxProcessInspectorsForTests();
 });
 
 async function get(path: string) {
@@ -245,6 +253,81 @@ describe("volumes", () => {
     await post("/api/volumes/remove", { volume: "vol-001" });
     const after = await get("/api/volumes/list");
     expect(after.data.volumes).not.toContain("vol-001");
+  });
+});
+
+describe("sandbox processes", () => {
+  it("returns only processes with non-excluded listening ports", async () => {
+    __setSandboxProcessInspectorsForTests({
+      listProcesses: async () => [
+        {
+          pid: 101,
+          ppid: 1,
+          name: "vite",
+          cmd: "node /workspace/node_modules/vite/bin/vite.js",
+          path: "/usr/local/bin/node",
+          cpu: 1.5,
+          memory: 1024,
+        },
+        {
+          pid: 202,
+          ppid: 1,
+          name: "next-dev",
+          cmd: "next dev",
+        },
+        {
+          pid: 303,
+          ppid: 1,
+          name: "storybook",
+          cmd: "storybook dev",
+        },
+        {
+          pid: 404,
+          ppid: 1,
+          name: "sleep",
+          cmd: "sleep infinity",
+        },
+      ],
+      listListeningSockets: async () => [
+        { pid: 101, port: 3080 },
+        { pid: 101, port: 3100 },
+        { pid: 101, port: 3100 },
+        { pid: 202, port: 9002 },
+        { pid: 303, port: 5173 },
+      ],
+    });
+
+    const res = await get("/api/sandbox/processes");
+    expect(res.ok).toBe(true);
+    expect(res.data.excluded_ports).toEqual([3080, 9002]);
+    expect(res.data.processes).toEqual([
+      expect.objectContaining({
+        pid: 101,
+        name: "vite",
+        ports: [3100],
+      }),
+      expect.objectContaining({
+        pid: 303,
+        name: "storybook",
+        ports: [5173],
+      }),
+    ]);
+    expect(
+      res.data.processes.some(
+        (process: { ports: number[] }) =>
+          process.ports.includes(3080) || process.ports.includes(9002),
+      ),
+    ).toBe(false);
+    expect(
+      res.data.processes.find(
+        (process: { pid: number }) => process.pid === 202,
+      ),
+    ).toBeUndefined();
+    expect(
+      res.data.processes.find(
+        (process: { pid: number }) => process.pid === 404,
+      ),
+    ).toBeUndefined();
   });
 });
 
