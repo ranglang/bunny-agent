@@ -2,8 +2,9 @@ import * as fs from "node:fs/promises";
 import type * as http from "node:http";
 import * as os from "node:os";
 import * as path from "node:path";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { DaemonRouter } from "../router.js";
+import { __resetSandboxProcessInspectorsForTests } from "../routes/processes.js";
 import { createDaemon } from "../server.js";
 
 const PORT = 13080;
@@ -20,6 +21,10 @@ beforeAll(async () => {
 afterAll(async () => {
   await new Promise<void>((r) => server.close(() => r()));
   await fs.rm(root, { recursive: true });
+});
+
+afterEach(() => {
+  __resetSandboxProcessInspectorsForTests();
 });
 
 async function get(path: string) {

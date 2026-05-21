@@ -55,6 +55,7 @@
     "vitest": "^1.6.1"
   },
   "dependencies": {
-    "isomorphic-git": "^1.37.6"
+    "isomorphic-git": "^1.37.6",
+    "ps-list": "^9.0.0"
   }
 }
